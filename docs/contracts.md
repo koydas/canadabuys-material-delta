@@ -87,6 +87,8 @@ An executable draft of the output format lives at [`schemas/event.schema.json`](
 
 `NO_CHANGE` is a positive verified comparison, not a fallback for errors. A record disappearing from the open-only file must **not** become a cancellation. Query the complete dataset or return `SOURCE_INCOMPLETE`.
 
+The schema enforces this table: each status fixes `verification`, `priority` bounds, whether `changes` may be empty, and the snapshot (object or null). Status, verification, priority and changes cannot be combined freely. Not enforced by the schema: that `changes[].before` differs from `after`, that `nextSnapshot.noticeId` equals `noticeId`, and that `REVIEW_RECOMMENDED` matches a `closingDate` or `status` change versus `INFO` for title only. These need implementation-level tests.
+
 ### Verification
 
 - `VERIFIED_FIELD_COMPARISON`: comparable source snapshots and fields establish a diff or equality.

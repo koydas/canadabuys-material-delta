@@ -34,6 +34,10 @@ Fixture-driven tests must cover:
 | Source download fails or CSV is truncated | `SOURCE_INCOMPLETE`; old snapshot retained |
 | Incomplete result carries a new snapshot | Reject against output schema |
 | Successful result omits its next snapshot | Reject against output schema |
+| `SOURCE_INCOMPLETE` with `verification` other than `UNVERIFIABLE`, `priority` other than `UNKNOWN`, or non-empty `changes` | Reject against output schema |
+| `FIRST_OBSERVATION` / `NO_CHANGE` with non-empty `changes` or `priority` other than `NONE` | Reject against output schema |
+| `FIRST_OBSERVATION` without `VERIFIED_CURRENT_SNAPSHOT`, or `NO_CHANGE` / `CHANGED` without `VERIFIED_FIELD_COMPARISON` | Reject against output schema |
+| `CHANGED` with empty `changes`, or `priority` `NONE` / `UNKNOWN` | Reject against output schema |
 | Duplicate notice IDs or duplicate official records | Explicit reject/incomplete; no silent arbitrary winner |
 | No known source freshness | Null metadata, not a guessed timestamp |
 | Snapshot schema incompatible | Explicit non-success; no comparison |

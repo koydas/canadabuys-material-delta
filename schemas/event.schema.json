@@ -184,6 +184,96 @@
       "if": {
         "properties": {
           "status": {
+            "const": "FIRST_OBSERVATION"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_CURRENT_SNAPSHOT"
+          },
+          "priority": {
+            "const": "NONE"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NO_CHANGE"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_FIELD_COMPARISON"
+          },
+          "priority": {
+            "const": "NONE"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CHANGED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_FIELD_COMPARISON"
+          },
+          "priority": {
+            "enum": [
+              "REVIEW_RECOMMENDED",
+              "INFO"
+            ]
+          },
+          "changes": {
+            "type": "array",
+            "minItems": 1
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
             "const": "SOURCE_INCOMPLETE"
           }
         },
@@ -193,15 +283,18 @@
       },
       "then": {
         "properties": {
+          "verification": {
+            "const": "UNVERIFIABLE"
+          },
+          "priority": {
+            "const": "UNKNOWN"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
           "nextSnapshot": {
             "type": "null"
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "nextSnapshot": {
-            "type": "object"
           }
         }
       }
