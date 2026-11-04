@@ -13,6 +13,7 @@
 
 ## Gate 1 — Verify source suitability
 
+- Run the manual `probe-source` workflow ([ADR-0003](adr/0003-read-only-source-probe.md)) and record its interpreted findings, with the report date and hashes, in `docs/source-verification.md`.
 - Resolve official identifier and field names using the XML dictionary.
 - Download and parse both open and complete snapshots; measure compressed/uncompressed file size and execution time.
 - Verify the file's update schedule against actual response metadata; no unsupported freshness claims.

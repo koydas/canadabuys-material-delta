@@ -1,0 +1,35 @@
+name: probe-source
+
+# Manual only. Read-only: fetches the public CanadaBuys open-data sources and uploads a structural report.
+# No schedule, no stored CSV, no write to the repository (docs/adr/0003-read-only-source-probe.md).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Unit tests
+        run: node --test
+      - name: Probe official sources
+        run: node scripts/probe-source.mjs --out probe-out
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f probe-out/report.md ]; then cat probe-out/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+      - name: Upload report (CSV files are not uploaded)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-probe-report
+          path: probe-out/
+          retention-days: 14
+          if-no-files-found: warn

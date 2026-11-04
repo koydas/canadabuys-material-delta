@@ -2,7 +2,7 @@
 
 **Detect decision-relevant changes in Canadian federal tender notices, with reproducible field-level evidence.**
 
-> **Status: design only.** No Actor implementation, hosted service, scheduled monitoring, or paying customers exist yet. The product hypothesis is unvalidated.
+> **Status: design only.** No Actor implementation, hosted service, scheduled monitoring, or paying customers exist yet. The product hypothesis is unvalidated. The only code is a manually triggered, read-only [source probe](docs/adr/0003-read-only-source-probe.md) used to verify the official data.
 
 ## The narrowly scoped problem
 
@@ -37,6 +37,7 @@ Always verify critical dates and tender attachments on the official CanadaBuys n
 - [Proposed event contract](docs/contracts.md) and [draft JSON schema](schemas/event.schema.json)
 - [ADR 0001: scope and evidence](docs/adr/0001-scope-and-evidence.md)
 - [ADR 0002: cross-run state](docs/adr/0002-cross-run-state.md)
+- [ADR 0003: read-only source probe](docs/adr/0003-read-only-source-probe.md)
 - [Validation gates and test plan](docs/validation.md)
 - [Apify publication plan](docs/apify.md)
 
