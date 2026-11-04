@@ -143,3 +143,81 @@ test('probe end-to-end against a local server: BOM + small file path, HTTP error
     assert.ok(!readFileSync(join(out, 'report.json'), 'utf8').includes('a@b.c'));
   } finally { Object.assign(SOURCES, saved); server.close(); }
 });
+
+// --- regression: a source that was not fully parsed must not feed the cross-feed comparison (review P2) ---
+async function runProbe(routes) {
+  const { createServer } = await import('node:http');
+  const { mkdtempSync, existsSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { SOURCES, probe } = await import('../scripts/probe-source.mjs');
+  const server = createServer((req, res) => (routes[req.url] ?? ((_, r) => { r.writeHead(404); r.end(); }))(req, res));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const saved = { ...SOURCES };
+  Object.assign(SOURCES, { open: `${base}/open`, complete: `${base}/complete`, dictionary: `${base}/dict` });
+  try {
+    const out = mkdtempSync(join(tmpdir(), 'probe-'));
+    const { report, failed } = await probe(out);
+    return { report, failed, md: readFileSync(join(out, 'report.md'), 'utf8'), hasDict: existsSync(join(out, 'dictionary.xml')) };
+  } finally { Object.assign(SOURCES, saved); server.close(); }
+}
+const ok = (body) => (_, res) => { res.writeHead(200); res.end(body); };
+const bigRows = Array.from({ length: 12_000 }, (_, i) => `N${i},Open`).join('\n'); // > 64 KiB detection window
+const HDR = 'referenceNumber,status\n';
+const OPEN = HDR + 'TARGET,Open\n';
+
+test('probe: invalid UTF-8 after the detection window -> complete feed incomplete, no absence counts', async () => {
+  const complete = Buffer.concat([Buffer.from(HDR + bigRows + '\n'), Buffer.from([0xff]), Buffer.from('\nTARGET,Open\n')]);
+  const { report, failed, md } = await runProbe({ '/open': ok(OPEN), '/complete': ok(complete), '/dict': ok('<a/>') });
+  assert.deepEqual(report.idComparison, []);
+  assert.match(report.idComparisonSkipped, /complete CSV incomplete \(invalid UTF-8\)/);
+  assert.ok(failed.some((m) => m.incomplete.includes('invalid UTF-8')));
+  assert.match(md, /INCOMPLETE: invalid UTF-8/); assert.match(md, /ID comparison not computed/);
+  assert.ok(!md.includes('absent from complete |'));
+});
+
+test('probe: invalid UTF-8 inside the first window -> incomplete, no header', async () => {
+  const bad = Buffer.concat([Buffer.from(HDR), Buffer.from([0xff]), Buffer.from('\n')]);
+  const { report, failed } = await runProbe({ '/open': ok(bad), '/complete': ok(OPEN), '/dict': ok('<a/>') });
+  assert.deepEqual(report.sources.open.meta.incomplete, ['invalid UTF-8', 'no header row']);
+  assert.match(report.idComparisonSkipped, /open CSV incomplete/);
+  assert.equal(failed.length, 1);
+});
+
+test('probe: transfer cut after parsing began -> incomplete, comparison skipped', async () => {
+  const cut = (_, res) => { res.writeHead(200); res.write(HDR + bigRows + '\n'); setTimeout(() => res.socket.destroy(), 50); };
+  const { report, failed } = await runProbe({ '/open': ok(OPEN), '/complete': cut, '/dict': ok('<a/>') });
+  assert.ok(report.sources.complete.meta.error);
+  assert.ok(report.sources.complete.meta.incomplete.length >= 1);
+  assert.match(report.idComparisonSkipped, /complete CSV incomplete/);
+  assert.deepEqual(report.idComparison, []);
+  assert.ok(failed.length >= 1);
+});
+
+test('probe: unterminated quoted field -> incomplete, comparison skipped', async () => {
+  const { report } = await runProbe({ '/open': ok(OPEN), '/complete': ok(HDR + 'TARGET,"Open\n'), '/dict': ok('<a/>') });
+  assert.deepEqual(report.sources.complete.meta.incomplete, ['unterminated quoted field']);
+  assert.match(report.idComparisonSkipped, /unterminated quoted field/);
+});
+
+test('probe: empty body -> no header row, comparison skipped', async () => {
+  const { report } = await runProbe({ '/open': ok(OPEN), '/complete': ok(''), '/dict': ok('<a/>') });
+  assert.deepEqual(report.sources.complete.meta.incomplete, ['no header row']);
+  assert.ok(report.idComparisonSkipped);
+});
+
+test('probe: both feeds complete -> comparison computed, nothing skipped', async () => {
+  const { report, failed } = await runProbe({ '/open': ok(OPEN), '/complete': ok(HDR + 'TARGET,Closed\n'), '/dict': ok('<a/>') });
+  assert.equal(report.idComparisonSkipped, null);
+  assert.deepEqual(report.idComparison, [{ column: 'referenceNumber', openDistinct: 1, completeDistinct: 1, openMissingFromComplete: 0 }]);
+  assert.equal(failed.length, 0);
+});
+
+test('probe: truncated dictionary is neither parsed nor written as dictionary.xml', async () => {
+  const cut = (_, res) => { res.writeHead(200); res.write('<dictionary><field/>'); setTimeout(() => res.socket.destroy(), 50); };
+  const { report, hasDict } = await runProbe({ '/open': ok(OPEN), '/complete': ok(OPEN), '/dict': cut });
+  assert.equal(hasDict, false);
+  assert.deepEqual(report.sources.dictionary.tags, []);
+  assert.ok(report.sources.dictionary.meta.incomplete.length >= 1);
+});

@@ -221,9 +221,17 @@ async function probeCsv(url) {
     }
   }
   const tail = parser ? parser.end() : { unterminatedQuote: false };
+  // A source counts as fully parsed only if every byte arrived, decoded, and closed every quote.
+  // Anything else is "incomplete": its statistics are partial and its IDs must not feed comparisons.
+  const incomplete = [];
+  if (meta.error) incomplete.push(meta.error);
+  if (invalidUtf8) incomplete.push('invalid UTF-8');
+  if (tail.unterminatedQuote) incomplete.push('unterminated quoted field');
+  if (!header) incomplete.push('no header row');
   return {
-    meta: { ...meta, invalidUtf8, bom, delimiter, unterminatedQuote: tail.unterminatedQuote },
-    header, profile: profiler ? profiler.result() : null, idSets: profiler ? profiler.idSets() : new Map(),
+    meta: { ...meta, invalidUtf8, bom, delimiter, unterminatedQuote: tail.unterminatedQuote, incomplete },
+    header, profile: profiler ? profiler.result() : null,
+    idSets: incomplete.length || !profiler ? new Map() : profiler.idSets(),
   };
 }
 
@@ -231,7 +239,8 @@ async function probeXml(url) {
   const chunks = [];
   const meta = await fetchStream(url, { onChunk: (c) => chunks.push(Buffer.from(c)) });
   const buf = Buffer.concat(chunks);
-  return { meta, buf, tags: meta.error ? [] : summarizeXml(buf.toString('utf8')) };
+  const incomplete = meta.error ? [meta.error] : [];
+  return { meta: { ...meta, incomplete }, buf: incomplete.length ? Buffer.alloc(0) : buf, tags: incomplete.length ? [] : summarizeXml(buf.toString('utf8')) };
 }
 
 export function renderMarkdown(r) {
@@ -242,6 +251,7 @@ export function renderMarkdown(r) {
       `- bytes: ${m.bytes ?? 'n/a'} · sha256: \`${m.sha256 ?? 'n/a'}\` · duration: ${m.durationMs} ms`,
       `- headers: \`${JSON.stringify(m.headers ?? {})}\``, `- HEAD: \`${JSON.stringify(m.head)}\``,
       `- delimiter: \`${JSON.stringify(m.delimiter)}\` · BOM: ${m.bom} · invalid UTF-8: ${m.invalidUtf8} · unterminated quote: ${m.unterminatedQuote}`);
+    if (m.incomplete?.length) L.push(`- **INCOMPLETE: ${m.incomplete.join('; ')}. Statistics below come from a partial parse and must not be used as facts.**`);
     if (s.profile) {
       L.push(`- rows: ${s.profile.rows} · ragged rows (length ≠ header): ${s.profile.ragged}`, '',
         '| # | column | filled | distinct | id: multi-row ids / max rows per id | values or shapes |', '|---|---|---|---|---|---|');
@@ -254,10 +264,11 @@ export function renderMarkdown(r) {
     L.push('');
   }
   L.push('## open vs complete', '', `- columns only in open: ${JSON.stringify(r.columnDiff.onlyInOpen)}`, `- columns only in complete: ${JSON.stringify(r.columnDiff.onlyInComplete)}`);
-  L.push('', '| id column | open distinct | complete distinct | open ids absent from complete |', '|---|---|---|---|');
+  if (r.idComparisonSkipped) L.push('', `- **ID comparison ${r.idComparisonSkipped}**`);
+  else L.push('', '| id column | open distinct | complete distinct | open ids absent from complete |', '|---|---|---|---|');
   for (const c of r.idComparison) L.push(`| \`${c.column}\` | ${c.openDistinct} | ${c.completeDistinct} | ${c.openMissingFromComplete} |`);
   const d = r.sources.dictionary;
-  L.push('', '## dictionary XML', '', `- status: ${d.meta.status ?? 'n/a'}${d.meta.error ? ` — **${d.meta.error}**` : ''} · bytes: ${d.meta.bytes ?? 'n/a'} · sha256: \`${d.meta.sha256 ?? 'n/a'}\``,
+  L.push('', '## dictionary XML', '', `- status: ${d.meta.status ?? 'n/a'}${d.meta.error ? ` — **INCOMPLETE: ${d.meta.error}**` : ''} · bytes: ${d.meta.bytes ?? 'n/a'} · sha256: \`${d.meta.sha256 ?? 'n/a'}\``,
     `- headers: \`${JSON.stringify(d.meta.headers ?? {})}\``, `- top tags: ${d.tags.map((t) => `${t.tag}×${t.n}`).join(', ')}`, '');
   return L.join('\n');
 }
@@ -274,13 +285,17 @@ export async function probe(outDir) {
       dictionary: { meta: dictionary.meta, tags: dictionary.tags },
     },
     columnDiff: { onlyInOpen: oh.filter((h) => !ch.includes(h)), onlyInComplete: ch.filter((h) => !oh.includes(h)) },
-    idComparison: compareIdSets(open.idSets, complete.idSets),
+    idComparison: [],
+    idComparisonSkipped: null,
   };
+  const blocked = [['open', open], ['complete', complete]].filter(([, x]) => x.meta.incomplete.length);
+  if (blocked.length) report.idComparisonSkipped = `not computed: ${blocked.map(([k, x]) => `${k} CSV incomplete (${x.meta.incomplete.join('; ')})`).join(', ')}`;
+  else report.idComparison = compareIdSets(open.idSets, complete.idSets);
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   writeFileSync(join(outDir, 'report.md'), renderMarkdown(report));
   if (dictionary.buf.length) writeFileSync(join(outDir, 'dictionary.xml'), dictionary.buf);
-  const failed = [open.meta, complete.meta, dictionary.meta].filter((m) => m.error);
+  const failed = [open.meta, complete.meta, dictionary.meta].filter((m) => m.error || m.incomplete.length);
   return { report, failed };
 }
 
@@ -288,7 +303,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const i = process.argv.indexOf('--out');
   const outDir = i > 0 ? process.argv[i + 1] : 'probe-out';
   const { failed } = await probe(outDir);
-  for (const m of failed) console.error(`FAILED ${m.url}: ${m.error}`);
+  for (const m of failed) console.error(`FAILED ${m.url}: ${(m.incomplete?.length ? m.incomplete : [m.error]).join('; ')}`);
   console.error(`report written to ${outDir}/`);
   process.exit(failed.length ? 1 : 0);
 }
