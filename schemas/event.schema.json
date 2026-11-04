@@ -1,0 +1,303 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CanadaBuys material delta result (draft)",
+  "description": "Draft semantic output record; not the Apify Actor output schema. Fields are hypothetical normalized names.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "noticeId",
+    "status",
+    "verification",
+    "priority",
+    "changes",
+    "observedAt",
+    "source",
+    "nextSnapshot"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "noticeId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "status": {
+      "enum": [
+        "FIRST_OBSERVATION",
+        "NO_CHANGE",
+        "CHANGED",
+        "SOURCE_INCOMPLETE"
+      ]
+    },
+    "verification": {
+      "enum": [
+        "VERIFIED_FIELD_COMPARISON",
+        "VERIFIED_CURRENT_SNAPSHOT",
+        "UNVERIFIABLE"
+      ]
+    },
+    "priority": {
+      "enum": [
+        "REVIEW_RECOMMENDED",
+        "INFO",
+        "NONE",
+        "UNKNOWN"
+      ]
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "field",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "field": {
+            "enum": [
+              "closingDate",
+              "status",
+              "title"
+            ]
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "datasetUrl",
+        "noticeUrl",
+        "lastModifiedAt",
+        "coverage",
+        "attribution"
+      ],
+      "properties": {
+        "datasetUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "noticeUrl": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastModifiedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "coverage": {
+          "const": "FEDERAL_ONLY"
+        },
+        "attribution": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "nextSnapshot": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "noticeId",
+            "values",
+            "sourceObservedAt"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "noticeId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "values": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "closingDate",
+                "status",
+                "title"
+              ],
+              "properties": {
+                "closingDate": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            },
+            "sourceObservedAt": {
+              "type": "string",
+              "format": "date-time"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "FIRST_OBSERVATION"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_CURRENT_SNAPSHOT"
+          },
+          "priority": {
+            "const": "NONE"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "NO_CHANGE"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_FIELD_COMPARISON"
+          },
+          "priority": {
+            "const": "NONE"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "CHANGED"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "VERIFIED_FIELD_COMPARISON"
+          },
+          "priority": {
+            "enum": [
+              "REVIEW_RECOMMENDED",
+              "INFO"
+            ]
+          },
+          "changes": {
+            "type": "array",
+            "minItems": 1
+          },
+          "nextSnapshot": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "SOURCE_INCOMPLETE"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "verification": {
+            "const": "UNVERIFIABLE"
+          },
+          "priority": {
+            "const": "UNKNOWN"
+          },
+          "changes": {
+            "type": "array",
+            "maxItems": 0
+          },
+          "nextSnapshot": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}
