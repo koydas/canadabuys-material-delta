@@ -13,7 +13,7 @@
 
 1. Add one script, `scripts/probe-source.mjs` (Node ≥ 20, no dependencies), and one manually triggered workflow, `.github/workflows/probe-source.yml`.
 2. The probe only issues `HEAD`/`GET` requests to the three official URLs and reports structural facts: headers, sizes, SHA-256, delimiter, BOM, column names, fill and distinct counts, ID multiplicity, date-shape patterns, and which open-feed IDs are absent from the complete feed.
-3. A source counts as fully parsed only if every byte arrived, decoded as UTF-8, closed every quoted field and yielded a header. Otherwise it is marked INCOMPLETE in the report, the workflow fails, and no cross-feed comparison is computed from it. A truncated dictionary is not written out.
+3. A source counts as fully parsed only if every byte arrived, decoded as UTF-8, closed every quoted field and yielded a header. Otherwise it is marked INCOMPLETE in the report, the workflow fails, and no cross-feed comparison is computed from it. A truncated dictionary is not written out. Before any fetch the script deletes its own three output files from the output directory, so a failed run never leaves a previous run's output beside its report.
 4. Values and shapes of contact-like columns are never written to the report. Raw CSV files are not uploaded; only the report and the public dictionary XML are.
 5. The workflow has `contents: read`, no schedule, and no repository write. Report artifacts expire after 14 days.
 6. Findings are interpreted by a human or agent in `docs/source-verification.md`, citing the report's date and hashes. The probe is not product code and is not reused by an Actor unless a later ADR says so.

@@ -145,7 +145,7 @@ test('probe end-to-end against a local server: BOM + small file path, HTTP error
 });
 
 // --- regression: a source that was not fully parsed must not feed the cross-feed comparison (review P2) ---
-async function runProbe(routes) {
+async function runProbe(routes, outDir) {
   const { createServer } = await import('node:http');
   const { mkdtempSync, existsSync, readFileSync } = await import('node:fs');
   const { tmpdir } = await import('node:os');
@@ -157,7 +157,7 @@ async function runProbe(routes) {
   const saved = { ...SOURCES };
   Object.assign(SOURCES, { open: `${base}/open`, complete: `${base}/complete`, dictionary: `${base}/dict` });
   try {
-    const out = mkdtempSync(join(tmpdir(), 'probe-'));
+    const out = outDir ?? mkdtempSync(join(tmpdir(), 'probe-'));
     const { report, failed } = await probe(out);
     return { report, failed, md: readFileSync(join(out, 'report.md'), 'utf8'), hasDict: existsSync(join(out, 'dictionary.xml')) };
   } finally { Object.assign(SOURCES, saved); server.close(); }
@@ -220,4 +220,39 @@ test('probe: truncated dictionary is neither parsed nor written as dictionary.xm
   assert.equal(hasDict, false);
   assert.deepEqual(report.sources.dictionary.tags, []);
   assert.ok(report.sources.dictionary.meta.incomplete.length >= 1);
+});
+
+test('probe: outputs of a previous run in the same directory are never left behind (review P2)', async () => {
+  const { mkdtempSync, writeFileSync, existsSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const out = mkdtempSync(join(tmpdir(), 'probe-'));
+  const cut = (_, res) => { res.writeHead(200); res.write('<dictionary>'); setTimeout(() => res.socket.destroy(), 50); };
+  const routes = { '/open': ok(OPEN), '/complete': ok(OPEN) };
+
+  const first = await runProbe({ ...routes, '/dict': ok('<dictionary><field/></dictionary>') }, out);
+  assert.equal(first.hasDict, true);
+  writeFileSync(join(out, 'report.json'), 'STALE'); writeFileSync(join(out, 'report.md'), 'STALE');
+
+  const second = await runProbe({ ...routes, '/dict': cut }, out);
+  assert.equal(second.hasDict, false, 'previous dictionary.xml must be removed');
+  assert.ok(!second.md.includes('STALE'));
+  assert.ok(!readFileSync(join(out, 'report.json'), 'utf8').includes('STALE'));
+  assert.ok(second.report.sources.dictionary.meta.incomplete.length >= 1);
+  assert.ok(existsSync(join(out, 'report.md')));
+});
+
+test('probe: stale outputs are removed when every source fails', async () => {
+  const { mkdtempSync, writeFileSync, existsSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { SOURCES, probe, OUTPUT_FILES } = await import('../scripts/probe-source.mjs');
+  const out = mkdtempSync(join(tmpdir(), 'probe-'));
+  for (const f of OUTPUT_FILES) writeFileSync(join(out, f), 'STALE');
+  const saved = { ...SOURCES };
+  Object.assign(SOURCES, { open: 'not a url', complete: 'not a url', dictionary: 'not a url' });
+  try { await probe(out); } finally { Object.assign(SOURCES, saved); }
+  // fetch errors are caught per source, so a report exists but must be this run's, with no stale dictionary
+  assert.equal(existsSync(join(out, 'dictionary.xml')), false);
+  assert.ok(!(await import('node:fs')).readFileSync(join(out, 'report.md'), 'utf8').includes('STALE'));
 });

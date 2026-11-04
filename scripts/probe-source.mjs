@@ -4,7 +4,7 @@
 // structural report: headers, sizes, hashes, column fill/cardinality, id multiplicity,
 // date-shape patterns. Zero dependencies, Node >= 20. Nothing here is product code.
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -273,7 +273,13 @@ export function renderMarkdown(r) {
   return L.join('\n');
 }
 
+// Files this script owns in the output directory. They are removed before any fetch so that a failed or
+// crashed run can never leave a previous run's output next to (or instead of) its own report.
+export const OUTPUT_FILES = ['report.json', 'report.md', 'dictionary.xml'];
+
 export async function probe(outDir) {
+  mkdirSync(outDir, { recursive: true });
+  for (const f of OUTPUT_FILES) rmSync(join(outDir, f), { force: true });
   const probedAt = new Date().toISOString();
   const [open, complete, dictionary] = [await probeCsv(SOURCES.open), await probeCsv(SOURCES.complete), await probeXml(SOURCES.dictionary)];
   const oh = open.header ?? []; const ch = complete.header ?? [];
@@ -291,7 +297,6 @@ export async function probe(outDir) {
   const blocked = [['open', open], ['complete', complete]].filter(([, x]) => x.meta.incomplete.length);
   if (blocked.length) report.idComparisonSkipped = `not computed: ${blocked.map(([k, x]) => `${k} CSV incomplete (${x.meta.incomplete.join('; ')})`).join(', ')}`;
   else report.idComparison = compareIdSets(open.idSets, complete.idSets);
-  mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   writeFileSync(join(outDir, 'report.md'), renderMarkdown(report));
   if (dictionary.buf.length) writeFileSync(join(outDir, 'dictionary.xml'), dictionary.buf);
