@@ -81,10 +81,11 @@ export function shapeOf(value) {
 }
 
 export function createColumnProfiler(header, { cap = 200_000, idCap = 500_000, enumMax = 30, shapeMax = 8 } = {}) {
+  const dupNames = new Set(header.filter((n, i) => header.indexOf(n) !== i));
   const cols = header.map((name) => {
     const isId = ID_RE.test(name);
     return {
-      name, sensitive: SENSITIVE_RE.test(name), isId, filled: 0,
+      name, duplicate: dupNames.has(name), sensitive: SENSITIVE_RE.test(name), isId, filled: 0,
       values: isId ? null : new Set(), counts: isId ? new Map() : null,
       overflow: false, shapes: new Map(), shapesOverflow: false,
     };
@@ -110,8 +111,13 @@ export function createColumnProfiler(header, { cap = 200_000, idCap = 500_000, e
         }
       });
     },
+    // A column whose name is duplicated or whose value cap was hit is ambiguous/partial: never compared, always listed.
     idSets() {
-      return new Map(cols.filter((c) => c.isId && !c.overflow).map((c) => [c.name, new Set(c.counts.keys())]));
+      return new Map(cols.filter((c) => c.isId && !c.overflow && !c.duplicate).map((c) => [c.name, new Set(c.counts.keys())]));
+    },
+    idExcluded() {
+      return cols.filter((c) => c.isId && (c.overflow || c.duplicate))
+        .map((c) => ({ column: c.name, reason: c.duplicate ? 'duplicate column name' : 'distinct-value cap reached' }));
     },
     result() {
       return {
@@ -119,6 +125,7 @@ export function createColumnProfiler(header, { cap = 200_000, idCap = 500_000, e
         columns: cols.map((c) => {
           const distinct = c.isId ? c.counts.size : c.values.size;
           const out = { name: c.name, sensitive: c.sensitive, filled: c.filled, distinct, distinctIsLowerBound: c.overflow };
+          if (c.duplicate) out.duplicateName = true;
           if (c.isId) {
             let multi = 0; let max = 0;
             for (const n of c.counts.values()) { if (n > 1) multi++; if (n > max) max = n; }
@@ -159,28 +166,34 @@ export function summarizeXml(text, top = 60) {
 async function fetchStream(url, { onChunk, timeoutMs = 600_000, maxBytes = 1_000_000_000 }) {
   const startedAt = new Date().toISOString();
   const t0 = Date.now();
-  const meta = { url, startedAt };
+  const meta = { url, startedAt, warnings: [] };
   try {
     const head = await fetch(url, { method: 'HEAD', redirect: 'follow', headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(60_000) });
     meta.head = { status: head.status, headers: pick(head.headers) };
   } catch (e) { meta.head = { error: String(e?.message ?? e) }; }
+  let bytes = 0;
   try {
     const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
     meta.status = res.status; meta.finalUrl = res.url; meta.headers = pick(res.headers);
     if (!res.ok) { meta.error = `HTTP ${res.status}`; return meta; }
-    const hash = createHash('sha256'); let bytes = 0;
+    // An HTML body with status 200 is a maintenance/error page, not the source.
+    if (/text\/html/i.test(meta.headers['content-type'] ?? '')) { meta.error = `unexpected content-type: ${meta.headers['content-type']}`; return meta; }
+    if (new URL(res.url).host !== new URL(url).host) meta.warnings.push(`redirected to another host: ${new URL(res.url).host}`);
+    const hash = createHash('sha256');
     for await (const chunk of res.body) {
       bytes += chunk.length;
       if (bytes > maxBytes) { meta.error = `aborted: exceeded ${maxBytes} bytes`; break; }
       hash.update(chunk); onChunk(chunk);
     }
-    meta.bytes = bytes; meta.sha256 = hash.digest('hex');
     const declared = Number(meta.headers['content-length']);
     // fetch() transparently decompresses, so a length comparison only makes sense without Content-Encoding.
+    // null = could not be checked; the report says so instead of implying the transfer was verified.
     meta.lengthMatchesHeader = meta.headers['content-encoding'] || !declared ? null : declared === bytes;
-    if (meta.lengthMatchesHeader === false) meta.error = `truncated: ${bytes} bytes received, ${declared} declared`;
-  } catch (e) { meta.error = String(e?.message ?? e); }
-  meta.durationMs = Date.now() - t0;
+    if (!meta.error && meta.lengthMatchesHeader === false) meta.error = `truncated: ${bytes} bytes received, ${declared} declared`;
+    // Size and hash describe the source only when the whole body was received.
+    if (meta.error) meta.bytesReceived = bytes; else { meta.bytes = bytes; meta.sha256 = hash.digest('hex'); }
+  } catch (e) { meta.error = String(e?.message ?? e); meta.bytesReceived = bytes; }
+  finally { meta.durationMs = Date.now() - t0; }
   return meta;
 }
 
@@ -230,8 +243,9 @@ async function probeCsv(url) {
   if (!header) incomplete.push('no header row');
   return {
     meta: { ...meta, invalidUtf8, bom, delimiter, unterminatedQuote: tail.unterminatedQuote, incomplete },
-    header, profile: profiler ? profiler.result() : null,
+    header, profile: profiler ? { ...profiler.result(), partial: incomplete.length > 0 } : null,
     idSets: incomplete.length || !profiler ? new Map() : profiler.idSets(),
+    idExcluded: profiler ? profiler.idExcluded() : [],
   };
 }
 
@@ -248,7 +262,9 @@ export function renderMarkdown(r) {
   for (const key of ['open', 'complete']) {
     const s = r.sources[key]; const m = s.meta;
     L.push(`## ${key} CSV`, '', `- URL: ${m.url}`, `- status: ${m.status ?? 'n/a'}${m.error ? ` — **${m.error}**` : ''}`,
-      `- bytes: ${m.bytes ?? 'n/a'} · sha256: \`${m.sha256 ?? 'n/a'}\` · duration: ${m.durationMs} ms`,
+      `- bytes: ${m.bytes ?? 'n/a'}${m.bytesReceived !== undefined ? ` (received before failure: ${m.bytesReceived}; no hash for a partial body)` : ''} · sha256: \`${m.sha256 ?? 'n/a'}\` · duration: ${m.durationMs} ms`,
+      `- transfer length check: ${m.lengthMatchesHeader === true ? 'matches Content-Length' : m.lengthMatchesHeader === false ? 'MISMATCH' : 'not possible (Content-Encoding or no Content-Length): completeness of the body is not independently verified'}`,
+      ...(m.warnings?.length ? [`- warnings: ${m.warnings.join('; ')}`] : []),
       `- headers: \`${JSON.stringify(m.headers ?? {})}\``, `- HEAD: \`${JSON.stringify(m.head)}\``,
       `- delimiter: \`${JSON.stringify(m.delimiter)}\` · BOM: ${m.bom} · invalid UTF-8: ${m.invalidUtf8} · unterminated quote: ${m.unterminatedQuote}`);
     if (m.incomplete?.length) L.push(`- **INCOMPLETE: ${m.incomplete.join('; ')}. Statistics below come from a partial parse and must not be used as facts.**`);
@@ -263,7 +279,10 @@ export function renderMarkdown(r) {
     }
     L.push('');
   }
-  L.push('## open vs complete', '', `- columns only in open: ${JSON.stringify(r.columnDiff.onlyInOpen)}`, `- columns only in complete: ${JSON.stringify(r.columnDiff.onlyInComplete)}`);
+  L.push('## open vs complete', '');
+  if (r.columnDiff) L.push(`- columns only in open: ${JSON.stringify(r.columnDiff.onlyInOpen)}`, `- columns only in complete: ${JSON.stringify(r.columnDiff.onlyInComplete)}`);
+  else L.push(`- **column diff ${r.columnDiffSkipped ?? 'not computed'}**`);
+  if (r.idComparisonExcluded?.length) L.push(`- id columns excluded from the comparison: ${r.idComparisonExcluded.map((e) => `${e.source}:\`${e.column}\` (${e.reason})`).join(', ')}`);
   if (r.idComparisonSkipped) L.push('', `- **ID comparison ${r.idComparisonSkipped}**`);
   else L.push('', '| id column | open distinct | complete distinct | open ids absent from complete |', '|---|---|---|---|');
   for (const c of r.idComparison) L.push(`| \`${c.column}\` | ${c.openDistinct} | ${c.completeDistinct} | ${c.openMissingFromComplete} |`);
@@ -290,13 +309,22 @@ export async function probe(outDir) {
       complete: { meta: complete.meta, header: complete.header, profile: complete.profile },
       dictionary: { meta: dictionary.meta, tags: dictionary.tags },
     },
-    columnDiff: { onlyInOpen: oh.filter((h) => !ch.includes(h)), onlyInComplete: ch.filter((h) => !oh.includes(h)) },
+    columnDiff: null,
+    columnDiffSkipped: null,
     idComparison: [],
     idComparisonSkipped: null,
+    idComparisonExcluded: [],
   };
   const blocked = [['open', open], ['complete', complete]].filter(([, x]) => x.meta.incomplete.length);
-  if (blocked.length) report.idComparisonSkipped = `not computed: ${blocked.map(([k, x]) => `${k} CSV incomplete (${x.meta.incomplete.join('; ')})`).join(', ')}`;
-  else report.idComparison = compareIdSets(open.idSets, complete.idSets);
+  if (blocked.length) {
+    // A header from a failed or cut transfer can be empty or truncated: no diff, no comparison.
+    report.idComparisonSkipped = `not computed: ${blocked.map(([k, x]) => `${k} CSV incomplete (${x.meta.incomplete.join('; ')})`).join(', ')}`;
+    report.columnDiffSkipped = report.idComparisonSkipped;
+  } else {
+    report.columnDiff = { onlyInOpen: oh.filter((h) => !ch.includes(h)), onlyInComplete: ch.filter((h) => !oh.includes(h)) };
+    report.idComparison = compareIdSets(open.idSets, complete.idSets);
+    report.idComparisonExcluded = [...open.idExcluded.map((e) => ({ source: 'open', ...e })), ...complete.idExcluded.map((e) => ({ source: 'complete', ...e }))];
+  }
   writeFileSync(join(outDir, 'report.json'), JSON.stringify(report, null, 2) + '\n');
   writeFileSync(join(outDir, 'report.md'), renderMarkdown(report));
   if (dictionary.buf.length) writeFileSync(join(outDir, 'dictionary.xml'), dictionary.buf);

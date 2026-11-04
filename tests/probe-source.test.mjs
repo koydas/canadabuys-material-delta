@@ -256,3 +256,82 @@ test('probe: stale outputs are removed when every source fails', async () => {
   assert.equal(existsSync(join(out, 'dictionary.xml')), false);
   assert.ok(!(await import('node:fs')).readFileSync(join(out, 'report.md'), 'utf8').includes('STALE'));
 });
+
+// --- audit pass: nothing partial, ambiguous or unverifiable is reported as an observed fact ---
+test('audit: failed source -> no column diff (an empty header is not "all columns missing")', async () => {
+  const { report, md } = await runProbe({ '/open': ok(OPEN), '/complete': (_, r) => { r.writeHead(404); r.end(); }, '/dict': ok('<a/>') });
+  assert.equal(report.columnDiff, null);
+  assert.match(report.columnDiffSkipped, /complete CSV incomplete/);
+  assert.ok(!md.includes('columns only in complete'));
+});
+
+test('audit: transfer cut inside the header line -> truncated header never reaches a diff', async () => {
+  const cut = (_, res) => { res.writeHead(200); res.write('referenceNumber,sta'); setTimeout(() => res.socket.destroy(), 50); };
+  const { report } = await runProbe({ '/open': ok(OPEN), '/complete': cut, '/dict': ok('<a/>') });
+  assert.equal(report.columnDiff, null);
+  assert.ok(report.sources.complete.meta.incomplete.length >= 1);
+});
+
+test('audit: partial body has no size/hash; complete body hash and size are exact; length check is stated', async () => {
+  const { createHash } = await import('node:crypto');
+  const cut = (_, res) => { res.writeHead(200); res.write(HDR + 'TARGET,Open\n'); setTimeout(() => res.socket.destroy(), 50); };
+  const partial = await runProbe({ '/open': ok(OPEN), '/complete': cut, '/dict': ok('<a/>') });
+  const pm = partial.report.sources.complete.meta;
+  assert.equal(pm.sha256, undefined); assert.equal(pm.bytes, undefined); assert.equal(typeof pm.bytesReceived, 'number');
+  assert.match(partial.md, /no hash for a partial body/);
+
+  const withLength = (_, res) => { res.writeHead(200, { 'content-length': Buffer.byteLength(OPEN) }); res.end(OPEN); };
+  const full = await runProbe({ '/open': withLength, '/complete': ok(OPEN), '/dict': ok('<a/>') });
+  const fm = full.report.sources.open.meta;
+  assert.equal(fm.bytes, Buffer.byteLength(OPEN));
+  assert.equal(fm.sha256, createHash('sha256').update(OPEN).digest('hex'));
+  assert.equal(fm.lengthMatchesHeader, true);
+  assert.match(full.md, /matches Content-Length/);
+});
+
+test('audit: chunked body without Content-Length -> report says completeness is not independently verified', async () => {
+  const chunked = (_, res) => { res.writeHead(200); res.write(OPEN.slice(0, 5)); res.end(OPEN.slice(5)); };
+  const { report, md } = await runProbe({ '/open': chunked, '/complete': ok(OPEN), '/dict': ok('<a/>') });
+  assert.equal(report.sources.open.meta.lengthMatchesHeader, null);
+  assert.match(md, /not independently verified/);
+});
+
+test('audit: HTTP 200 with an HTML body is not parsed as the source', async () => {
+  const html = (_, res) => { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); res.end('<html>Maintenance</html>'); };
+  const { report, failed } = await runProbe({ '/open': ok(OPEN), '/complete': html, '/dict': html });
+  assert.match(report.sources.complete.meta.error, /unexpected content-type/);
+  assert.equal(report.sources.complete.header, null);
+  assert.equal(report.sources.dictionary.tags.length, 0);
+  assert.equal(failed.length, 2);
+});
+
+test('audit: redirect to another host is reported as a warning, data still observed', async () => {
+  const redirect = (req, res) => { res.writeHead(302, { location: `http://localhost:${req.socket.localPort}/real` }); res.end(); };
+  const { report, md } = await runProbe({ '/open': redirect, '/real': ok(OPEN), '/complete': ok(OPEN), '/dict': ok('<a/>') });
+  assert.match(report.sources.open.meta.warnings[0], /redirected to another host: localhost:/);
+  assert.equal(report.sources.open.meta.incomplete.length, 0);
+  assert.match(md, /warnings: redirected to another host/);
+});
+
+test('audit: duplicate column names are excluded from the comparison and listed, not silently overwritten', async () => {
+  const dup = 'referenceNumber,referenceNumber,status\nA,B,Open\n';
+  const { report, md } = await runProbe({ '/open': ok(dup), '/complete': ok(HDR + 'A,Open\n'), '/dict': ok('<a/>') });
+  assert.deepEqual(report.idComparison, []);
+  assert.deepEqual(report.idComparisonExcluded, [{ source: 'open', column: 'referenceNumber', reason: 'duplicate column name' }, { source: 'open', column: 'referenceNumber', reason: 'duplicate column name' }]);
+  assert.match(md, /id columns excluded from the comparison/);
+  assert.equal(report.sources.open.profile.columns[0].duplicateName, true);
+});
+
+test('audit: id column over the cardinality cap is excluded and listed', () => {
+  const p = createColumnProfiler(['referenceNumber'], { idCap: 2 });
+  ['a', 'b', 'c'].forEach((v) => p.add([v]));
+  assert.equal(p.idSets().size, 0);
+  assert.deepEqual(p.idExcluded(), [{ column: 'referenceNumber', reason: 'distinct-value cap reached' }]);
+});
+
+test('audit: report.json marks a partial profile; a complete one is not marked', async () => {
+  const bad = Buffer.concat([Buffer.from(HDR + bigRows + '\n'), Buffer.from([0xff]), Buffer.from('\n')]);
+  const partial = await runProbe({ '/open': ok(OPEN), '/complete': ok(bad), '/dict': ok('<a/>') });
+  assert.equal(partial.report.sources.complete.profile.partial, true);
+  assert.equal(partial.report.sources.open.profile.partial, false);
+});
