@@ -32,6 +32,8 @@ Fixture-driven tests must cover:
 | Title changes only | `CHANGED` + `INFO` |
 | Record absent from open notices | Check complete feed; never infer cancellation from absence |
 | Source download fails or CSV is truncated | `SOURCE_INCOMPLETE`; old snapshot retained |
+| Incomplete result carries a new snapshot | Reject against output schema |
+| Successful result omits its next snapshot | Reject against output schema |
 | Duplicate notice IDs or duplicate official records | Explicit reject/incomplete; no silent arbitrary winner |
 | No known source freshness | Null metadata, not a guessed timestamp |
 | Snapshot schema incompatible | Explicit non-success; no comparison |
