@@ -21,6 +21,10 @@ jobs:
         run: node --test
       - name: Probe official sources
         run: node scripts/probe-source.mjs --out probe-out
+      - name: Print report in the job log
+        if: always()
+        run: |
+          if [ -f probe-out/report.md ]; then cat probe-out/report.md; fi
       - name: Job summary
         if: always()
         run: |

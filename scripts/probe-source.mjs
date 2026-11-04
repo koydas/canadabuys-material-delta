@@ -23,7 +23,24 @@ export const ID_RE = /reference|r[eé]f[eé]rence|number|num[eé]ro|identifier|s
 
 const REPORT_HEADERS = [
   'content-type', 'content-length', 'content-encoding', 'last-modified', 'etag', 'date', 'cache-control', 'age',
+  'server', 'via', 'x-cache', 'retry-after', 'location', 'www-authenticate', // diagnostics for non-2xx answers
 ];
+
+/** First bytes of a non-2xx answer as text (error pages only; never parsed as source data). */
+export async function bodyExcerpt(res, { maxBytes = 512, maxChars = 300 } = {}) {
+  if (!/^(text\/|application\/(json|xml))/i.test(res.headers.get('content-type') ?? '') || !res.body) return null;
+  try {
+    const reader = res.body.getReader();
+    const parts = []; let n = 0;
+    while (n < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value); n += value.length;
+    }
+    await reader.cancel().catch(() => {});
+    return new TextDecoder('utf-8').decode(Buffer.concat(parts)).replace(/\s+/g, ' ').trim().slice(0, maxChars);
+  } catch { return null; }
+}
 
 /** Streaming RFC 4180 parser. write() accepts arbitrary chunk boundaries. */
 export function createCsvParser(onRow, delimiter = ',') {
@@ -175,7 +192,7 @@ async function fetchStream(url, { onChunk, timeoutMs = 600_000, maxBytes = 1_000
   try {
     const res = await fetch(url, { redirect: 'follow', headers: { 'user-agent': USER_AGENT }, signal: AbortSignal.timeout(timeoutMs) });
     meta.status = res.status; meta.finalUrl = res.url; meta.headers = pick(res.headers);
-    if (!res.ok) { meta.error = `HTTP ${res.status}`; return meta; }
+    if (!res.ok) { meta.error = `HTTP ${res.status}`; meta.errorBodyExcerpt = await bodyExcerpt(res); return meta; }
     // An HTML body with status 200 is a maintenance/error page, not the source.
     if (/text\/html/i.test(meta.headers['content-type'] ?? '')) { meta.error = `unexpected content-type: ${meta.headers['content-type']}`; return meta; }
     if (new URL(res.url).host !== new URL(url).host) meta.warnings.push(`redirected to another host: ${new URL(res.url).host}`);
@@ -267,6 +284,7 @@ export function renderMarkdown(r) {
       ...(m.warnings?.length ? [`- warnings: ${m.warnings.join('; ')}`] : []),
       `- headers: \`${JSON.stringify(m.headers ?? {})}\``, `- HEAD: \`${JSON.stringify(m.head)}\``,
       `- delimiter: \`${JSON.stringify(m.delimiter)}\` · BOM: ${m.bom} · invalid UTF-8: ${m.invalidUtf8} · unterminated quote: ${m.unterminatedQuote}`);
+    if (m.errorBodyExcerpt) L.push(`- error body excerpt: \`${m.errorBodyExcerpt.replace(/\`/g, "'")}\``);
     if (m.incomplete?.length) L.push(`- **INCOMPLETE: ${m.incomplete.join('; ')}. Statistics below come from a partial parse and must not be used as facts.**`);
     if (s.profile) {
       L.push(`- rows: ${s.profile.rows} · ragged rows (length ≠ header): ${s.profile.ragged}`, '',
@@ -288,7 +306,7 @@ export function renderMarkdown(r) {
   for (const c of r.idComparison) L.push(`| \`${c.column}\` | ${c.openDistinct} | ${c.completeDistinct} | ${c.openMissingFromComplete} |`);
   const d = r.sources.dictionary;
   L.push('', '## dictionary XML', '', `- status: ${d.meta.status ?? 'n/a'}${d.meta.error ? ` — **INCOMPLETE: ${d.meta.error}**` : ''} · bytes: ${d.meta.bytes ?? 'n/a'} · sha256: \`${d.meta.sha256 ?? 'n/a'}\``,
-    `- headers: \`${JSON.stringify(d.meta.headers ?? {})}\``, `- top tags: ${d.tags.map((t) => `${t.tag}×${t.n}`).join(', ')}`, '');
+    `- headers: \`${JSON.stringify(d.meta.headers ?? {})}\``, ...(d.meta.errorBodyExcerpt ? [`- error body excerpt: \`${d.meta.errorBodyExcerpt.replace(/\`/g, "'")}\``] : []), `- top tags: ${d.tags.map((t) => `${t.tag}×${t.n}`).join(', ')}`, '');
   return L.join('\n');
 }
 

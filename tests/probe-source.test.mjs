@@ -335,3 +335,21 @@ test('audit: report.json marks a partial profile; a complete one is not marked',
   assert.equal(partial.report.sources.complete.profile.partial, true);
   assert.equal(partial.report.sources.open.profile.partial, false);
 });
+
+test('diagnostics: a 403 answer keeps server header and a bounded text excerpt, shown in the report', async () => {
+  const deny = (_, res) => { res.writeHead(403, { 'content-type': 'text/html; charset=utf-8', server: 'ExampleEdge' }); res.end(`<html>  Access   Denied ${'x'.repeat(2000)}</html>`); };
+  const { report, md } = await runProbe({ '/open': ok(OPEN), '/complete': deny, '/dict': ok('<a/>') });
+  const m = report.sources.complete.meta;
+  assert.equal(m.error, 'HTTP 403');
+  assert.equal(m.headers.server, 'ExampleEdge');
+  assert.ok(m.errorBodyExcerpt.startsWith('<html> Access Denied xxx'));
+  assert.ok(m.errorBodyExcerpt.length <= 300);
+  assert.match(md, /error body excerpt: `<html> Access Denied/);
+});
+
+test('diagnostics: non-text error bodies are not excerpted; successful answers carry no excerpt', async () => {
+  const bin = (_, res) => { res.writeHead(500, { 'content-type': 'application/octet-stream' }); res.end(Buffer.from([1, 2, 3])); };
+  const { report } = await runProbe({ '/open': ok(OPEN), '/complete': bin, '/dict': ok('<a/>') });
+  assert.equal(report.sources.complete.meta.errorBodyExcerpt, null);
+  assert.equal(report.sources.open.meta.errorBodyExcerpt, undefined);
+});
